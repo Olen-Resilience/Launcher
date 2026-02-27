@@ -3,7 +3,7 @@ name: Build Debug APK
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:  # This lets you trigger it manually with a button!
+  workflow_dispatch:
 
 jobs:
   build:
@@ -26,11 +26,14 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --no-daemon
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        env:
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Fossify-Launcher-Debug
-          path: app/build/outputs/apk/debug/*.apk
+          path: "**/*.apk"
+          if-no-files-found: warn
           retention-days: 30
