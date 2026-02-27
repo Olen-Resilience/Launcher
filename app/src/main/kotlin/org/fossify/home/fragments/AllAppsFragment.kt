@@ -7,6 +7,14 @@ import android.view.MotionEvent
 import android.view.inputmethod.EditorInfo
 import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.RecyclerView.OnScrollListener
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.fossify.commons.extensions.beGone
 import org.fossify.commons.extensions.beVisibleIf
 import org.fossify.commons.extensions.getProperPrimaryColor
@@ -36,6 +44,16 @@ class AllAppsFragment(
 
     private var launchers = emptyList<AppLauncher>()
 
+    // Pre-computed normalized titles for instant search (computed once, not on every keystroke)
+    private var normalizedTitles = emptyList<String>()
+
+    // Coroutine scope for background search — cancelled when view detaches
+    private val searchScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private var searchJob: Job? = null
+
+    // Debounce delay in ms — filters out rapid keystrokes so the UI never blocks
+    private val SEARCH_DEBOUNCE_MS = 100L
+
     @SuppressLint("ClickableViewAccessibility")
     override fun setupFragment(activity: MainActivity) {
         this.activity = activity
@@ -53,6 +71,12 @@ class AllAppsFragment(
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         setupDrawerBackground()
+    }
+
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        // Cancel all pending search jobs to prevent memory leaks
+        searchScope.cancel()
     }
 
     @SuppressLint("NotifyDataSetChanged")
@@ -129,6 +153,9 @@ class AllAppsFragment(
             )
         )
 
+        // Pre-compute normalized titles once so search never has to normalize strings on the fly
+        normalizedTitles = launchers.map { it.title.normalizeString().lowercase() }
+
         setupAdapter(launchers)
     }
 
@@ -171,6 +198,11 @@ class AllAppsFragment(
                 removeAt(position)
             }
 
+            // Keep normalized titles cache in sync
+            normalizedTitles = normalizedTitles.toMutableList().apply {
+                removeAt(position)
+            }
+
             submitList(launchers.toMutableList())
         }
     }
@@ -199,7 +231,7 @@ class AllAppsFragment(
         binding.searchBar.setupMenu()
 
         binding.searchBar.onSearchTextChangedListener = {
-            submitList(launchers)
+            submitListDebounced(it)
         }
 
         binding.searchBar.binding.topToolbarSearch.setOnEditorActionListener { _, actionId, _ ->
@@ -254,19 +286,50 @@ class AllAppsFragment(
         return false
     }
 
-    private fun submitList(items: List<AppLauncher>) {
-        val searchQuery = binding.searchBar.getCurrentQuery()
-        val filtered = if (searchQuery.isNotEmpty()) {
-            items.filter {
-                it.title.normalizeString()
-                    .contains(searchQuery.normalizeString(), ignoreCase = true)
+    /**
+     * Debounced entry point called on every keystroke.
+     * Cancels any pending search and waits SEARCH_DEBOUNCE_MS before running,
+     * so rapid typing never blocks the UI thread at all.
+     */
+    private fun submitListDebounced(query: String) {
+        searchJob?.cancel()
+        searchJob = searchScope.launch {
+            delay(SEARCH_DEBOUNCE_MS)
+            val filtered = filterApps(query)
+            withContext(Dispatchers.Main) {
+                getAdapter()?.submitList(filtered) {
+                    showNoResultsPlaceholderIfNeeded()
+                }
+            }
+        }
+    }
+
+    /**
+     * Pure filtering function that runs entirely on a background thread (Dispatchers.Default).
+     * Uses pre-computed normalizedTitles cache — zero string normalization on the UI thread.
+     */
+    private fun filterApps(query: String): List<AppLauncher> {
+        if (query.isEmpty()) return launchers
+
+        val normalizedQuery = query.normalizeString().lowercase()
+
+        // Fast path: check if query is a single character — prefix match is even quicker
+        return if (normalizedQuery.length == 1) {
+            launchers.filterIndexed { index, _ ->
+                normalizedTitles[index].startsWith(normalizedQuery)
+            } + launchers.filterIndexed { index, _ ->
+                !normalizedTitles[index].startsWith(normalizedQuery) &&
+                    normalizedTitles[index].contains(normalizedQuery)
             }
         } else {
-            items
+            // Full contains search using pre-computed cache — no allocations per item
+            launchers.filterIndexed { index, _ ->
+                normalizedTitles[index].contains(normalizedQuery)
+            }
         }
+    }
 
-        getAdapter()?.submitList(filtered) {
-            showNoResultsPlaceholderIfNeeded()
-        }
+    private fun submitList(items: List<AppLauncher>) {
+        submitListDebounced(binding.searchBar.getCurrentQuery())
     }
 }
