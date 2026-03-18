@@ -127,7 +127,7 @@ class MainActivity : SimpleActivity(), FlingListener {
     private var wallpaperColorChangeListener: OnColorsChangedListener? = null
     private var wallpaperSupportsDarkText: Boolean? = null
 
-    // Receiver that watches for newly installed apps so they appear immediately.
+    // Receiver that watches for newly installed, updated, or removed apps.
     private var packageReceiver: BroadcastReceiver? = null
 
     private lateinit var mDetector: GestureDetectorCompat
@@ -191,8 +191,8 @@ class MainActivity : SimpleActivity(), FlingListener {
         registerPackageReceiver()
     }
 
-    // Registers a lightweight receiver so newly installed apps are detected
-    // immediately without waiting for the next onResume cycle.
+    // Registers a receiver so newly installed, replaced, or removed apps are
+    // detected immediately without waiting for the next onResume cycle.
     private fun registerPackageReceiver() {
         packageReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
@@ -202,11 +202,10 @@ class MainActivity : SimpleActivity(), FlingListener {
                     action == Intent.ACTION_PACKAGE_REMOVED ||
                     action == Intent.ACTION_PACKAGE_REPLACED
                 ) {
-                    // On remove/replace we must also evict from icon cache so stale
-                    // drawables are not reused for a re-installed app with a new icon.
+                    // For removals and replacements, evict the stale cached drawable
+                    // so a re-installed app with a new icon does not reuse the old one.
                     val packageName = intent.data?.schemeSpecificPart
                     if (packageName != null && action != Intent.ACTION_PACKAGE_ADDED) {
-                        // Evict every activity variant for that package from icon cache
                         IconCache.evictPackage(packageName)
                     }
                     ensureBackgroundThread {
@@ -590,7 +589,8 @@ class MainActivity : SimpleActivity(), FlingListener {
                 runOnUiThread {
                     binding.homeScreenGrid.root.skipToPage(page)
                 }
-                // delay showing the shortcut both to let the user see adding it in realtime and hackily avoid concurrent modification exception at HomeScreenGrid
+                // delay showing the shortcut both to let the user see adding it in realtime
+                // and hackily avoid concurrent modification exception at HomeScreenGrid
                 Thread.sleep(2000)
 
                 try {
@@ -636,7 +636,8 @@ class MainActivity : SimpleActivity(), FlingListener {
         return Pair(maxPage + 1, Rect(0, 0, 0, 0))
     }
 
-    // some devices ACTION_MOVE keeps triggering for the whole long press duration, but we are interested in real moves only, when coords change
+    // some devices ACTION_MOVE keeps triggering for the whole long press duration,
+    // but we are interested in real moves only, when coords change
     private fun hasFingerMoved(event: MotionEvent): Boolean {
         return mTouchDownX != -1 && mTouchDownY != -1 &&
                 (abs(mTouchDownX - event.x) > mMoveGestureThreshold || abs(mTouchDownY - event.y) > mMoveGestureThreshold)
@@ -1166,9 +1167,6 @@ class MainActivity : SimpleActivity(), FlingListener {
                     loaded
                 } ?: continue
 
-            // Compute placeholder color only for newly loaded icons; reuse stored thumbnailColor
-            // for cached ones via the DB record. Since we pass 0 here for cached items the DB
-            // value will be used by the existing Room query instead.
             val bitmap = drawable.toBitmap(
                 width = max(drawable.intrinsicWidth, 1),
                 height = max(drawable.intrinsicHeight, 1),
