@@ -263,7 +263,9 @@ class MainActivity : SimpleActivity(), FlingListener {
                         runOnUiThread { binding.homeScreenGrid.root.fetchGridItems() }
                     }
                 } else {
-                    IconCache.clear()
+                    // Intentionally empty.
+                    // evictPackage() above already removed the stale icon.
+                    // The drawer refreshes naturally on the next onResume.
                 }
             }
         }
@@ -446,11 +448,9 @@ class MainActivity : SimpleActivity(), FlingListener {
 
         when (requestCode) {
             UNINSTALL_APP_REQUEST_CODE -> {
-                // The ACTION_PACKAGE_REMOVED broadcast in registerPackageReceiver
-                // handles grid cleanup and icon eviction automatically.
-                // Clearing the cache here ensures the drawer rebuilds cleanly
-                // on the next onResume without a full expensive re-scan.
-                IconCache.clear()
+                // Intentionally empty.
+                // ACTION_PACKAGE_REMOVED broadcast handles icon eviction
+                // and grid cleanup via registerPackageReceiver().
             }
 
             REQUEST_ALLOW_BINDING_WIDGET -> mActionOnCanBindWidget?.invoke(resultCode == RESULT_OK)
