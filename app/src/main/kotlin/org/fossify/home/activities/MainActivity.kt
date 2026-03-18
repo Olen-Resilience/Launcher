@@ -200,7 +200,24 @@ class MainActivity : SimpleActivity(), FlingListener {
                 if (action == Intent.ACTION_PACKAGE_REMOVED ||
                     action == Intent.ACTION_PACKAGE_REPLACED
                 ) {
+                    // Evict the stale drawable so a reinstalled or updated app
+                    // always loads a fresh icon on the next cache miss.
                     IconCache.evictPackage(packageName)
+
+                    // Remove the grid item immediately so the home screen does
+                    // not show a label with no icon while the package is gone.
+                    homeScreenGridItemsDB.deleteByPackageName(packageName)
+                    runOnUiThread { binding.homeScreenGrid.root.fetchGridItems() }
+                }
+
+                // Flaw 4 fix: for app updates (REPLACED), also evict the old
+                // AppLauncher object from the in-memory launchers list so the
+                // drawer does not keep showing the old icon until the next
+                // onResume. The subsequent ACTION_PACKAGE_ADDED broadcast will
+                // re-add the app with the freshly loaded updated icon.
+                if (action == Intent.ACTION_PACKAGE_REPLACED) {
+                    IconCache.launchers = IconCache.launchers
+                        .filter { it.packageName != packageName }
                 }
 
                 if (action == Intent.ACTION_PACKAGE_ADDED) {
@@ -379,7 +396,6 @@ class MainActivity : SimpleActivity(), FlingListener {
                 }.toMutableList() as ArrayList<AppLauncher>
             }
 
-            binding.allAppsFragment.root.gotLaunchers(IconCache.launchers)
             refreshLaunchers()
         }
 
@@ -1204,9 +1220,18 @@ class MainActivity : SimpleActivity(), FlingListener {
             }
 
             val label = info.loadLabel(packageManager).toString()
-            val drawable = info.loadIcon(packageManager)
-                ?: getDrawableForPackageName(packageName)
-                ?: continue
+            val identifier = "$packageName/$activityName"
+
+            // Reuse cached drawable — avoids re-decoding on every resume.
+            // Only call loadIcon() for apps not already in IconCache.
+            val drawable = IconCache.getIcon(identifier)
+                ?: run {
+                    val loaded = info.loadIcon(packageManager)
+                        ?: getDrawableForPackageName(packageName)
+                        ?: return@run null
+                    IconCache.putIcon(identifier, loaded)
+                    loaded
+                } ?: continue
 
             val bitmap = drawable.toBitmap(
                 width = max(drawable.intrinsicWidth, 1),
@@ -1222,7 +1247,7 @@ class MainActivity : SimpleActivity(), FlingListener {
                     activityName = activityName,
                     order = 0,
                     thumbnailColor = placeholderColor,
-                    drawable = bitmap.toDrawable(resources)
+                    drawable = drawable
                 )
             )
         }
