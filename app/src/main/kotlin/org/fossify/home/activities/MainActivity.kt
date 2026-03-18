@@ -222,6 +222,13 @@ class MainActivity : SimpleActivity(), FlingListener {
 
                 if (action == Intent.ACTION_PACKAGE_ADDED) {
                     ensureBackgroundThread {
+                        // EXTRA_REPLACING is true when PACKAGE_ADDED fires as
+                        // part of an update sequence (after PACKAGE_REPLACED).
+                        // Only place icons for genuine fresh installs.
+                        if (intent.getBooleanExtra(Intent.EXTRA_REPLACING, false)) {
+                            return@ensureBackgroundThread
+                        }
+
                         val launcherIntent = Intent(Intent.ACTION_MAIN, null).apply {
                             addCategory(Intent.CATEGORY_LAUNCHER)
                             setPackage(packageName)
