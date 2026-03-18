@@ -193,21 +193,100 @@ class MainActivity : SimpleActivity(), FlingListener {
 
     // Registers a receiver so newly installed, replaced, or removed apps are
     // detected immediately without waiting for the next onResume cycle.
+    // On ACTION_PACKAGE_ADDED, the new app's icon is placed on the first available
+    // empty home screen cell, provided one exists on an existing page.
     private fun registerPackageReceiver() {
         packageReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 val action = intent.action ?: return
-                if (
-                    action == Intent.ACTION_PACKAGE_ADDED ||
-                    action == Intent.ACTION_PACKAGE_REMOVED ||
+                val packageName = intent.data?.schemeSpecificPart ?: return
+
+                if (action == Intent.ACTION_PACKAGE_REMOVED ||
                     action == Intent.ACTION_PACKAGE_REPLACED
                 ) {
-                    // For removals and replacements, evict the stale cached drawable
-                    // so a re-installed app with a new icon does not reuse the old one.
-                    val packageName = intent.data?.schemeSpecificPart
-                    if (packageName != null && action != Intent.ACTION_PACKAGE_ADDED) {
-                        IconCache.evictPackage(packageName)
+                    // Evict the stale cached drawable so a re-installed app with a new
+                    // icon does not reuse the old one.
+                    IconCache.evictPackage(packageName)
+                }
+
+                if (action == Intent.ACTION_PACKAGE_ADDED) {
+                    ensureBackgroundThread {
+                        // Resolve the launcher activity for the new package.
+                        val launcherIntent = Intent(Intent.ACTION_MAIN, null).apply {
+                            addCategory(Intent.CATEGORY_LAUNCHER)
+                            setPackage(packageName)
+                        }
+                        val resolvedList = packageManager.queryIntentActivities(
+                            launcherIntent, PackageManager.PERMISSION_GRANTED
+                        )
+                        val appInfo = resolvedList.firstOrNull()
+                            ?: run {
+                                // No launcher activity found; just refresh the drawer.
+                                refreshLaunchers()
+                                return@ensureBackgroundThread
+                            }
+
+                        // Guard against duplicate placement — e.g. if the user previously
+                        // removed the icon from the home screen and then reinstalled.
+                        val alreadyOnGrid = homeScreenGridItemsDB
+                            .getAllItems()
+                            .any { it.packageName == packageName }
+                        if (alreadyOnGrid) {
+                            refreshLaunchers()
+                            return@ensureBackgroundThread
+                        }
+
+                        val activityName = appInfo.activityInfo.name
+                        val label = appInfo.loadLabel(packageManager).toString()
+                        val drawable = appInfo.loadIcon(packageManager)
+                            ?: getDrawableForPackageName(packageName)
+
+                        if (drawable != null) {
+                            IconCache.putIcon("$packageName/$activityName", drawable)
+                        }
+
+                        val (page, rect) = findFirstEmptyCell()
+
+                        // Only place the icon on an existing page. If findFirstEmptyCell()
+                        // returned a brand-new page (grid is full), skip auto-placement —
+                        // flooding the home screen with a new page is worse than doing nothing.
+                        val gridItems = homeScreenGridItemsDB.getAllItems()
+                        val maxExistingPage = if (gridItems.isEmpty()) 0
+                        else gridItems.maxOf { it.page }
+
+                        if (page > maxExistingPage) {
+                            refreshLaunchers()
+                            return@ensureBackgroundThread
+                        }
+
+                        val gridItem = HomeScreenGridItem(
+                            id = null,
+                            left = rect.left,
+                            top = rect.top,
+                            right = rect.right,
+                            bottom = rect.bottom,
+                            page = page,
+                            packageName = packageName,
+                            activityName = activityName,
+                            title = label,
+                            type = ITEM_TYPE_ICON,
+                            className = "",
+                            widgetId = -1,
+                            shortcutId = "",
+                            icon = null,
+                            docked = false,
+                            parentId = null
+                        )
+
+                        homeScreenGridItemsDB.insert(gridItem)
+                        refreshLaunchers()
+
+                        runOnUiThread {
+                            binding.homeScreenGrid.root.fetchGridItems()
+                        }
                     }
+                } else {
+                    // For removal and replacement, just refresh the drawer.
                     ensureBackgroundThread {
                         refreshLaunchers()
                     }
@@ -602,8 +681,11 @@ class MainActivity : SimpleActivity(), FlingListener {
         }
     }
 
+    // Returns the first unoccupied cell across all existing pages.
+    // The isEmpty() guard prevents a crash from maxOf() on an empty list.
     private fun findFirstEmptyCell(): Pair<Int, Rect> {
         val gridItems = homeScreenGridItemsDB.getAllItems() as ArrayList<HomeScreenGridItem>
+        if (gridItems.isEmpty()) return Pair(0, Rect(0, 0, 0, 0))
         val maxPage = gridItems.maxOf { it.page }
         val occupiedCells = ArrayList<Triple<Int, Int, Int>>()
         gridItems.toImmutableList().filter { it.parentId == null }.forEach { item ->
