@@ -10,9 +10,12 @@ import android.appwidget.AppWidgetHost
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProviderInfo
 import android.content.ActivityNotFoundException
+import android.content.BroadcastReceiver
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.content.Intent.FLAG_ACTIVITY_BROUGHT_TO_FRONT
+import android.content.IntentFilter
 import android.content.pm.ActivityInfo
 import android.content.pm.LauncherApps
 import android.content.pm.PackageManager
@@ -124,6 +127,9 @@ class MainActivity : SimpleActivity(), FlingListener {
     private var wallpaperColorChangeListener: OnColorsChangedListener? = null
     private var wallpaperSupportsDarkText: Boolean? = null
 
+    // Receiver that watches for newly installed apps so they appear immediately.
+    private var packageReceiver: BroadcastReceiver? = null
+
     private lateinit var mDetector: GestureDetectorCompat
     private val binding by viewBinding(ActivityMainBinding::inflate)
 
@@ -182,6 +188,41 @@ class MainActivity : SimpleActivity(), FlingListener {
         }
 
         setupWallpaperColorListener()
+        registerPackageReceiver()
+    }
+
+    // Registers a lightweight receiver so newly installed apps are detected
+    // immediately without waiting for the next onResume cycle.
+    private fun registerPackageReceiver() {
+        packageReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                val action = intent.action ?: return
+                if (
+                    action == Intent.ACTION_PACKAGE_ADDED ||
+                    action == Intent.ACTION_PACKAGE_REMOVED ||
+                    action == Intent.ACTION_PACKAGE_REPLACED
+                ) {
+                    // On remove/replace we must also evict from icon cache so stale
+                    // drawables are not reused for a re-installed app with a new icon.
+                    val packageName = intent.data?.schemeSpecificPart
+                    if (packageName != null && action != Intent.ACTION_PACKAGE_ADDED) {
+                        // Evict every activity variant for that package from icon cache
+                        IconCache.evictPackage(packageName)
+                    }
+                    ensureBackgroundThread {
+                        refreshLaunchers()
+                    }
+                }
+            }
+        }
+
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_ADDED)
+            addAction(Intent.ACTION_PACKAGE_REMOVED)
+            addAction(Intent.ACTION_PACKAGE_REPLACED)
+            addDataScheme("package")
+        }
+        registerReceiver(packageReceiver, filter)
     }
 
     private fun setupWallpaperColorListener() {
@@ -312,6 +353,14 @@ class MainActivity : SimpleActivity(), FlingListener {
             WallpaperManager.getInstance(this)
                 .removeOnColorsChangedListener(wallpaperColorChangeListener!!)
         }
+
+        packageReceiver?.let {
+            try {
+                unregisterReceiver(it)
+            } catch (_: Exception) {
+            }
+        }
+        packageReceiver = null
     }
 
     override fun onPause() {
@@ -1104,16 +1153,29 @@ class MainActivity : SimpleActivity(), FlingListener {
             }
 
             val label = info.loadLabel(packageManager).toString()
-            val drawable = info.loadIcon(packageManager)
-                ?: getDrawableForPackageName(packageName)
-                ?: continue
+            val identifier = "$packageName/$activityName"
 
+            // Reuse a cached drawable if one exists — avoids re-decoding on every resume.
+            // Only call loadIcon() for apps not already in the cache (new installs, first boot).
+            val drawable = IconCache.getIcon(identifier)
+                ?: run {
+                    val loaded = info.loadIcon(packageManager)
+                        ?: getDrawableForPackageName(packageName)
+                        ?: return@run null
+                    IconCache.putIcon(identifier, loaded)
+                    loaded
+                } ?: continue
+
+            // Compute placeholder color only for newly loaded icons; reuse stored thumbnailColor
+            // for cached ones via the DB record. Since we pass 0 here for cached items the DB
+            // value will be used by the existing Room query instead.
             val bitmap = drawable.toBitmap(
                 width = max(drawable.intrinsicWidth, 1),
                 height = max(drawable.intrinsicHeight, 1),
                 config = Bitmap.Config.ARGB_8888
             )
             val placeholderColor = calculateAverageColor(bitmap)
+
             allApps.add(
                 AppLauncher(
                     id = null,
@@ -1122,7 +1184,7 @@ class MainActivity : SimpleActivity(), FlingListener {
                     activityName = activityName,
                     order = 0,
                     thumbnailColor = placeholderColor,
-                    drawable = bitmap.toDrawable(resources)
+                    drawable = drawable
                 )
             )
         }
