@@ -14,8 +14,8 @@ import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.content.Intent.FLAG_ACTIVITY_BROUGHT_TO_FRONT
 import android.content.IntentFilter
+import android.content.Intent.FLAG_ACTIVITY_BROUGHT_TO_FRONT
 import android.content.pm.ActivityInfo
 import android.content.pm.LauncherApps
 import android.content.pm.PackageManager
@@ -124,11 +124,11 @@ class MainActivity : SimpleActivity(), FlingListener {
             ((shortcutId: String, label: String, icon: Drawable) -> Unit)? = null
     private var wasJustPaused: Boolean = false
 
-    private var wallpaperColorChangeListener: OnColorsChangedListener? = null
-    private var wallpaperSupportsDarkText: Boolean? = null
-
     // Watches for newly installed, updated, or removed packages.
     private var packageReceiver: BroadcastReceiver? = null
+
+    private var wallpaperColorChangeListener: OnColorsChangedListener? = null
+    private var wallpaperSupportsDarkText: Boolean? = null
 
     private lateinit var mDetector: GestureDetectorCompat
     private val binding by viewBinding(ActivityMainBinding::inflate)
@@ -191,17 +191,12 @@ class MainActivity : SimpleActivity(), FlingListener {
         registerPackageReceiver()
     }
 
-    // Detects newly installed, updated, or removed apps without waiting for onResume.
-    // On ACTION_PACKAGE_ADDED the icon is placed on the first available home screen cell,
-    // provided one exists on an existing page. If the grid is full, placement is skipped.
     private fun registerPackageReceiver() {
         packageReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 val action = intent.action ?: return
                 val packageName = intent.data?.schemeSpecificPart ?: return
 
-                // Evict stale cached drawable so a reinstalled app with a new icon
-                // does not reuse the previous one.
                 if (action == Intent.ACTION_PACKAGE_REMOVED ||
                     action == Intent.ACTION_PACKAGE_REPLACED
                 ) {
@@ -210,26 +205,20 @@ class MainActivity : SimpleActivity(), FlingListener {
 
                 if (action == Intent.ACTION_PACKAGE_ADDED) {
                     ensureBackgroundThread {
-                        // Resolve the launcher activity for the new package.
                         val launcherIntent = Intent(Intent.ACTION_MAIN, null).apply {
                             addCategory(Intent.CATEGORY_LAUNCHER)
                             setPackage(packageName)
                         }
+                        // Query once — reused for duplicate check AND maxExistingPage
+                        val gridItems = homeScreenGridItemsDB.getAllItems()
+
                         val appInfo = packageManager
                             .queryIntentActivities(launcherIntent, PackageManager.PERMISSION_GRANTED)
                             .firstOrNull()
-                            ?: run {
-                                refreshLaunchers()
-                                return@ensureBackgroundThread
-                            }
+                            ?: run { refreshLaunchers(); return@ensureBackgroundThread }
 
-                        // Skip placement if this package is already on the home screen.
-                        // This prevents duplicates on reinstall or when the user had
-                        // previously removed the icon and reinstalled the app.
-                        val alreadyOnGrid = homeScreenGridItemsDB
-                            .getAllItems()
-                            .any { it.packageName == packageName }
-                        if (alreadyOnGrid) {
+                        // Skip if this package is already on the home screen
+                        if (gridItems.any { it.packageName == packageName }) {
                             refreshLaunchers()
                             return@ensureBackgroundThread
                         }
@@ -244,13 +233,10 @@ class MainActivity : SimpleActivity(), FlingListener {
                         }
 
                         val (page, rect) = findFirstEmptyCell()
+                        val maxExistingPage = if (gridItems.isEmpty()) 0
+                        else gridItems.maxOf { it.page }
 
-                        // Do not auto-create a new page. If findFirstEmptyCell returns
-                        // a page beyond what exists the grid is full — skip placement.
-                        val currentItems = homeScreenGridItemsDB.getAllItems()
-                        val maxExistingPage = if (currentItems.isEmpty()) 0
-                        else currentItems.maxOf { it.page }
-
+                        // Do not auto-create a new page if the grid is full
                         if (page > maxExistingPage) {
                             refreshLaunchers()
                             return@ensureBackgroundThread
@@ -277,15 +263,10 @@ class MainActivity : SimpleActivity(), FlingListener {
 
                         homeScreenGridItemsDB.insert(gridItem)
                         refreshLaunchers()
-
-                        runOnUiThread {
-                            binding.homeScreenGrid.root.fetchGridItems()
-                        }
+                        runOnUiThread { binding.homeScreenGrid.root.fetchGridItems() }
                     }
                 } else {
-                    ensureBackgroundThread {
-                        refreshLaunchers()
-                    }
+                    ensureBackgroundThread { refreshLaunchers() }
                 }
             }
         }
@@ -429,10 +410,7 @@ class MainActivity : SimpleActivity(), FlingListener {
         }
 
         packageReceiver?.let {
-            try {
-                unregisterReceiver(it)
-            } catch (_: Exception) {
-            }
+            try { unregisterReceiver(it) } catch (_: Exception) { }
         }
         packageReceiver = null
     }
@@ -676,11 +654,8 @@ class MainActivity : SimpleActivity(), FlingListener {
         }
     }
 
-    // The isEmpty() guard prevents maxOf() from throwing on a fresh install
-    // where the grid has no items yet.
     private fun findFirstEmptyCell(): Pair<Int, Rect> {
         val gridItems = homeScreenGridItemsDB.getAllItems() as ArrayList<HomeScreenGridItem>
-        if (gridItems.isEmpty()) return Pair(0, Rect(0, 0, 0, 0))
         val maxPage = gridItems.maxOf { it.page }
         val occupiedCells = ArrayList<Triple<Int, Int, Int>>()
         gridItems.toImmutableList().filter { it.parentId == null }.forEach { item ->
@@ -691,7 +666,7 @@ class MainActivity : SimpleActivity(), FlingListener {
             }
         }
 
-        for (page in 0 until maxPage) {
+        for (page in 0..maxPage) {
             for (checkedYCell in 0 until config.homeColumnCount) {
                 for (checkedXCell in 0 until config.homeRowCount - 1) {
                     val wantedCell = Triple(page, checkedXCell, checkedYCell)
@@ -1230,18 +1205,9 @@ class MainActivity : SimpleActivity(), FlingListener {
             }
 
             val label = info.loadLabel(packageManager).toString()
-            val identifier = "$packageName/$activityName"
-
-            // Reuse a cached drawable when available so icons are never re-decoded
-            // on every resume. loadIcon() is only called for new or evicted entries.
-            val drawable = IconCache.getIcon(identifier)
-                ?: run {
-                    val loaded = info.loadIcon(packageManager)
-                        ?: getDrawableForPackageName(packageName)
-                        ?: return@run null
-                    IconCache.putIcon(identifier, loaded)
-                    loaded
-                } ?: continue
+            val drawable = info.loadIcon(packageManager)
+                ?: getDrawableForPackageName(packageName)
+                ?: continue
 
             val bitmap = drawable.toBitmap(
                 width = max(drawable.intrinsicWidth, 1),
@@ -1249,7 +1215,6 @@ class MainActivity : SimpleActivity(), FlingListener {
                 config = Bitmap.Config.ARGB_8888
             )
             val placeholderColor = calculateAverageColor(bitmap)
-
             allApps.add(
                 AppLauncher(
                     id = null,
@@ -1258,7 +1223,7 @@ class MainActivity : SimpleActivity(), FlingListener {
                     activityName = activityName,
                     order = 0,
                     thumbnailColor = placeholderColor,
-                    drawable = drawable
+                    drawable = bitmap.toDrawable(resources)
                 )
             )
         }
