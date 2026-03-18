@@ -1194,46 +1194,42 @@ class MainActivity : SimpleActivity(), FlingListener {
         binding.homeScreenGrid.root.nextPage(redraw = true)
     }
 
+    @SuppressLint("WrongConstant")
     fun getAllAppLaunchers(): ArrayList<AppLauncher> {
         val hiddenIcons = hiddenIconsDB.getHiddenIcons().map { it.getIconIdentifier() }
         val simpleLauncher = applicationContext.packageName
         val microG = "com.google.android.gms"
 
-        // LauncherApps is the correct API for launcher apps.
-        // getActivityList() + getBadgedIcon() uses the system icon cache,
-        // handles multiple user profiles, and is significantly faster than
-        // the legacy PackageManager approach used previously.
-        val launcherApps = getSystemService(Context.LAUNCHER_APPS_SERVICE) as LauncherApps
-        val activities = launcherApps.getActivityList(null, android.os.Process.myUserHandle())
-
         val allApps = ArrayList<AppLauncher>()
+        val intent = Intent(Intent.ACTION_MAIN, null)
+        intent.addCategory(Intent.CATEGORY_LAUNCHER)
+        val list = packageManager.queryIntentActivities(intent, PackageManager.PERMISSION_GRANTED)
 
-        for (info in activities) {
-            val packageName = info.applicationInfo.packageName
+        for (info in list) {
+            val packageName = info.activityInfo.applicationInfo.packageName
             if (packageName == simpleLauncher || packageName == microG) continue
 
-            val activityName = info.componentName.className
+            val activityName = info.activityInfo.name
             if (hiddenIcons.contains("$packageName/$activityName")) continue
 
-            val label = info.label.toString()
+            val label = info.loadLabel(packageManager).toString()
             val identifier = "$packageName/$activityName"
 
-            // L1 (memory) -> L2 (disk) -> system getBadgedIcon().
-            // Warm starts hit L1 or L2 for every app. Only new or evicted
-            // apps reach the slow APK-decode path.
+            // L1 (memory) -> L2 (disk) -> decode from APK.
+            // Warm starts always hit L1. Cold starts hit L2 (disk PNG),
+            // which is ~10x faster than APK decoding. Only genuinely new
+            // or evicted apps reach the slow loadIcon() path.
             val drawable = IconCache.getIcon(identifier)
                 ?: run {
-                    val loaded = try {
-                        info.getBadgedIcon(resources.displayMetrics.densityDpi)
-                    } catch (_: Exception) {
-                        getDrawableForPackageName(packageName)
-                    } ?: return@run null
+                    val loaded = info.loadIcon(packageManager)
+                        ?: getDrawableForPackageName(packageName)
+                        ?: return@run null
                     IconCache.putIcon(identifier, loaded)
                     loaded
                 } ?: continue
 
-            // Colour is cached alongside the drawable so the pixel scan
-            // runs at most once per app per installation.
+            // Colour is cached so the expensive pixel scan runs at most
+            // once per app per installation.
             val placeholderColor = IconCache.getColor(identifier)
                 ?: run {
                     val bitmap = drawable.toBitmap(
