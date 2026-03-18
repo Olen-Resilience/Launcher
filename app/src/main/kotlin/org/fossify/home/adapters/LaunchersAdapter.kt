@@ -85,7 +85,7 @@ class LaunchersAdapter(
                 binding.launcherIcon.setPadding(iconPadding, iconPadding, iconPadding, 0)
 
                 // Set the drawable directly — it is already decoded and cached in IconCache.
-                // No Glide needed here; Glide was adding placeholder flicker with zero benefit
+                // Glide has been removed: it was adding placeholder flicker with zero benefit
                 // since the input is already an in-memory Drawable, not a URL or resource id.
                 binding.launcherIcon.setImageDrawable(launcher.drawable)
 
