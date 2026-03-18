@@ -197,27 +197,27 @@ class MainActivity : SimpleActivity(), FlingListener {
                 val action = intent.action ?: return
                 val packageName = intent.data?.schemeSpecificPart ?: return
 
-                if (action == Intent.ACTION_PACKAGE_REMOVED ||
-                    action == Intent.ACTION_PACKAGE_REPLACED
-                ) {
-                    // Evict the stale drawable so a reinstalled or updated app
-                    // always loads a fresh icon on the next cache miss.
+                if (action == Intent.ACTION_PACKAGE_REMOVED) {
+                    // Evict the stale drawable from the icon cache.
                     IconCache.evictPackage(packageName)
-
-                    // Remove the grid item immediately so the home screen does
-                    // not show a label with no icon while the package is gone.
-                    homeScreenGridItemsDB.deleteByPackageName(packageName)
-                    runOnUiThread { binding.homeScreenGrid.root.fetchGridItems() }
+                    // Delete the grid item and refresh on a background thread.
+                    // IMPORTANT: Room DB operations must never run on the main
+                    // thread. onReceive() runs on the main thread, so we must
+                    // always dispatch DB work to a background thread here.
+                    ensureBackgroundThread {
+                        homeScreenGridItemsDB.deleteByPackageName(packageName)
+                        runOnUiThread { binding.homeScreenGrid.root.fetchGridItems() }
+                    }
                 }
 
-                // Flaw 4 fix: for app updates (REPLACED), also evict the old
-                // AppLauncher object from the in-memory launchers list so the
-                // drawer does not keep showing the old icon until the next
-                // onResume. The subsequent ACTION_PACKAGE_ADDED broadcast will
-                // re-add the app with the freshly loaded updated icon.
                 if (action == Intent.ACTION_PACKAGE_REPLACED) {
-                    IconCache.launchers = IconCache.launchers
-                        .filter { it.packageName != packageName }
+                    // App update: evict the stale drawable so the next cache
+                    // miss triggers a fresh loadIcon() call. Do NOT delete the
+                    // grid item — the app should keep its home screen position.
+                    // The subsequent ACTION_PACKAGE_ADDED broadcast will find
+                    // the grid item still exists and skip re-placement, which
+                    // is correct. The drawer refreshes naturally on next onResume.
+                    IconCache.evictPackage(packageName)
                 }
 
                 if (action == Intent.ACTION_PACKAGE_ADDED) {
@@ -1233,12 +1233,19 @@ class MainActivity : SimpleActivity(), FlingListener {
                     loaded
                 } ?: continue
 
-            val bitmap = drawable.toBitmap(
-                width = max(drawable.intrinsicWidth, 1),
-                height = max(drawable.intrinsicHeight, 1),
-                config = Bitmap.Config.ARGB_8888
-            )
-            val placeholderColor = calculateAverageColor(bitmap)
+            // Skip the expensive bitmap conversion and pixel scan when the
+            // colour is already cached. Only compute it for newly loaded icons.
+            val placeholderColor = IconCache.getColor(identifier)
+                ?: run {
+                    val bitmap = drawable.toBitmap(
+                        width = max(drawable.intrinsicWidth, 1),
+                        height = max(drawable.intrinsicHeight, 1),
+                        config = Bitmap.Config.ARGB_8888
+                    )
+                    val computed = calculateAverageColor(bitmap)
+                    IconCache.putColor(identifier, computed)
+                    computed
+                }
             allApps.add(
                 AppLauncher(
                     id = null,
