@@ -27,9 +27,16 @@ object IconCache {
         synchronized(this) { iconMap[identifier] = drawable }
     }
 
+    fun evictPackage(packageName: String) {
+        synchronized(this) {
+            val keysToRemove = iconMap.keys.filter { it.startsWith("$packageName/") }
+            keysToRemove.forEach { iconMap.remove(it) }
+        }
+    }
+
     fun clear() {
         synchronized(this) {
-            launchers = emptyList()
+            cachedLaunchers = emptyList()
             iconMap.clear()
         }
     }
