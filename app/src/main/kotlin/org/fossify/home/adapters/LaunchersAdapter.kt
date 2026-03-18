@@ -1,7 +1,6 @@
 package org.fossify.home.adapters
 
 import android.annotation.SuppressLint
-import android.graphics.drawable.Drawable
 import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
@@ -9,16 +8,10 @@ import android.view.ViewGroup
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
-import com.bumptech.glide.Glide
-import com.bumptech.glide.load.engine.DiskCacheStrategy
-import com.bumptech.glide.request.target.DrawableImageViewTarget
-import com.bumptech.glide.request.transition.Transition
 import com.qtalk.recyclerviewfastscroller.RecyclerViewFastScroller
 import org.fossify.commons.extensions.beVisibleIf
-import org.fossify.commons.extensions.getColoredDrawableWithColor
 import org.fossify.commons.extensions.getProperTextColor
 import org.fossify.commons.extensions.realScreenSize
-import org.fossify.home.R
 import org.fossify.home.activities.SimpleActivity
 import org.fossify.home.databinding.ItemLauncherLabelBinding
 import org.fossify.home.extensions.animateScale
@@ -91,27 +84,10 @@ class LaunchersAdapter(
                 binding.launcherLabel.beVisibleIf(activity.config.showDrawerAppLabels)
                 binding.launcherIcon.setPadding(iconPadding, iconPadding, iconPadding, 0)
 
-                if (launcher.drawable != null && binding.launcherIcon.tag == true) {
-                    binding.launcherIcon.setImageDrawable(launcher.drawable)
-                } else {
-                    val placeholderDrawable = activity.resources.getColoredDrawableWithColor(
-                        drawableId = R.drawable.placeholder_drawable,
-                        color = launcher.thumbnailColor
-                    )
-                    Glide.with(activity)
-                        .load(launcher.drawable)
-                        .placeholder(placeholderDrawable)
-                        .diskCacheStrategy(DiskCacheStrategy.RESOURCE)
-                        .into(object : DrawableImageViewTarget(binding.launcherIcon) {
-                            override fun onResourceReady(
-                                resource: Drawable,
-                                transition: Transition<in Drawable>?
-                            ) {
-                                super.onResourceReady(resource, transition)
-                                view.tag = true
-                            }
-                        })
-                }
+                // Set the drawable directly — it is already decoded and cached in IconCache.
+                // No Glide needed here; Glide was adding placeholder flicker with zero benefit
+                // since the input is already an in-memory Drawable, not a URL or resource id.
+                binding.launcherIcon.setImageDrawable(launcher.drawable)
 
                 setOnClickListener { itemClick(launcher) }
                 setOnLongClickListener {
@@ -128,7 +104,7 @@ class LaunchersAdapter(
                 setOnTouchListener { _, event ->
                     when (event.action) {
                         MotionEvent.ACTION_DOWN -> {
-                            binding.launcherIcon.drawable.alpha = LAUNCHER_ALPHA_PRESSED
+                            binding.launcherIcon.drawable?.alpha = LAUNCHER_ALPHA_PRESSED
                             animateScale(
                                 from = LAUNCHER_SCALE_NORMAL,
                                 to = LAUNCHER_SCALE_PRESSED,
@@ -138,7 +114,7 @@ class LaunchersAdapter(
 
                         MotionEvent.ACTION_UP,
                         MotionEvent.ACTION_CANCEL -> {
-                            binding.launcherIcon.drawable.alpha = LAUNCHER_ALPHA_NORMAL
+                            binding.launcherIcon.drawable?.alpha = LAUNCHER_ALPHA_NORMAL
                             animateScale(
                                 from = LAUNCHER_SCALE_PRESSED,
                                 to = LAUNCHER_SCALE_NORMAL,
