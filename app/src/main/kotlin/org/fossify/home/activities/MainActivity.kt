@@ -215,11 +215,10 @@ class MainActivity : SimpleActivity(), FlingListener {
                         val appInfo = packageManager
                             .queryIntentActivities(launcherIntent, PackageManager.PERMISSION_GRANTED)
                             .firstOrNull()
-                            ?: run { refreshLaunchers(); return@ensureBackgroundThread }
+                            ?: return@ensureBackgroundThread
 
                         // Skip if this package is already on the home screen
                         if (gridItems.any { it.packageName == packageName }) {
-                            refreshLaunchers()
                             return@ensureBackgroundThread
                         }
 
@@ -238,7 +237,6 @@ class MainActivity : SimpleActivity(), FlingListener {
 
                         // Do not auto-create a new page if the grid is full
                         if (page > maxExistingPage) {
-                            refreshLaunchers()
                             return@ensureBackgroundThread
                         }
 
@@ -262,11 +260,10 @@ class MainActivity : SimpleActivity(), FlingListener {
                         )
 
                         homeScreenGridItemsDB.insert(gridItem)
-                        refreshLaunchers()
                         runOnUiThread { binding.homeScreenGrid.root.fetchGridItems() }
                     }
                 } else {
-                    ensureBackgroundThread { refreshLaunchers() }
+                    IconCache.clear()
                 }
             }
         }
@@ -449,9 +446,11 @@ class MainActivity : SimpleActivity(), FlingListener {
 
         when (requestCode) {
             UNINSTALL_APP_REQUEST_CODE -> {
-                ensureBackgroundThread {
-                    refreshLaunchers()
-                }
+                // The ACTION_PACKAGE_REMOVED broadcast in registerPackageReceiver
+                // handles grid cleanup and icon eviction automatically.
+                // Clearing the cache here ensures the drawer rebuilds cleanly
+                // on the next onResume without a full expensive re-scan.
+                IconCache.clear()
             }
 
             REQUEST_ALLOW_BINDING_WIDGET -> mActionOnCanBindWidget?.invoke(resultCode == RESULT_OK)
